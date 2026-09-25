@@ -174,7 +174,7 @@ final class OAuth {
 		if ( 'S256' !== self::string( $p, 'code_challenge_method' ) || ! preg_match( '/^[A-Za-z0-9_-]{43}$/D', $challenge ) ) { self::redirect( $pending, array( 'error' => 'invalid_request', 'error_description' => 'S256 PKCE is required.' ) ); }
 		if ( ! is_user_logged_in() ) {
 			$query = array_intersect_key( $p, array_flip( array( 'client_id', 'redirect_uri', 'state', 'response_type', 'resource', 'scope', 'code_challenge', 'code_challenge_method' ) ) );
-			wp_safe_redirect( wp_login_url( add_query_arg( $query, admin_url( 'admin-post.php?action=kodanote_mcp_authorize' ) ) ) ); exit;
+			wp_safe_redirect( wp_login_url( add_query_arg( urlencode_deep( $query ), admin_url( 'admin-post.php?action=kodanote_mcp_authorize' ) ) ) ); exit;
 		}
 		if ( ! self::eligible( get_current_user_id() ) ) { self::stop( 'Your WordPress account has no available MCP permissions.', 403 ); }
 		$scope = Access::permitted( $scope );
@@ -190,7 +190,21 @@ final class OAuth {
 	private static function redirect( array $pending, array $params ): void {
 		if ( '' !== $pending['state'] ) { $params['state'] = $pending['state']; }
 		// External redirect is intentional; exact URI was matched against client registration.
-		wp_redirect( add_query_arg( $params, $pending['redirect_uri'] ), 302, 'Kodanote MCP' ); exit;
+		$redirect = $pending['redirect_uri'];
+		$separator = ( str_ends_with( $redirect, '?' ) || str_ends_with( $redirect, '&' ) ) ? '' : ( str_contains( $redirect, '?' ) ? '&' : '?' );
+		$url = $redirect . $separator . http_build_query( $params, '', '&', PHP_QUERY_RFC3986 );
+		if ( 'POST' === ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) ) {
+			// Browsers enforce form-action on the entire HTTP redirect chain. Finish the
+			// same-origin POST, then navigate separately to the validated OAuth callback.
+			$nonce = self::random();
+			header( "Content-Security-Policy: default-src 'none'; script-src 'nonce-{$nonce}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" );
+			header( 'Content-Type: text/html; charset=UTF-8' );
+			?><!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Return to your application</title>
+			<p>Returning to your application… <a href="<?php echo esc_url( $url ); ?>">Continue</a> if you are not redirected.</p>
+			<script nonce="<?php echo esc_attr( $nonce ); ?>">window.location.replace(<?php echo wp_json_encode( $url, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT ); ?>);</script>
+			</html><?php exit;
+		}
+		wp_redirect( $url, 302, 'Kodanote MCP' ); exit;
 	}
 	private static function consent_page( array $client, array $pending, string $id ): void {
 		$requested = explode( ' ', $pending['scope'] );
@@ -204,7 +218,7 @@ final class OAuth {
 		<p>Choose the permissions to delegate. Only permissions available to your WordPress account are shown. Each edit permission includes its corresponding read permission.</p>
 		<p>Your WordPress permissions always apply. Access lasts up to 30 days, and you can revoke it from <strong>MCP Connections</strong> under Users or Profile.</p>
 		<p><small>The application name is supplied by its developer and is not verified. Only approve an application you intended to connect. The authorization code will be sent to:</small><br><code><?php echo esc_html( $pending['redirect_uri'] ); ?></code></p>
-		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php?action=kodanote_mcp_authorize' ) ); ?>">
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php?action=kodanote_mcp_authorize', 'relative' ) ); ?>">
 		<input type="hidden" name="pending" value="<?php echo esc_attr( $id ); ?>"><?php wp_nonce_field( 'kodanote_mcp_consent_' . $id ); ?>
 		<input type="hidden" name="scope_selection" value="1">
 		<?php foreach ( $requested as $item ) : ?><p><label><input type="checkbox" name="<?php echo esc_attr( Access::field_name( $item ) ); ?>" value="1" checked> <strong><?php echo esc_html( $definitions[ $item ]['label'] ); ?></strong><br><small><?php echo esc_html( $definitions[ $item ]['description'] ); ?></small></label></p><?php endforeach; ?>

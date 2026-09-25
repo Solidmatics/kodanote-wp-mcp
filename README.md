@@ -4,7 +4,7 @@ A standalone WordPress plugin that gives remote MCP clients role-aware content, 
 
 ## Install and connect
 
-1. Build with `python3 scripts/package.py`, then upload `dist/kodanote-mcp-0.3.0.zip` in **Plugins → Add New → Upload Plugin**. Alternatively copy this directory to `wp-content/plugins/kodanote-mcp` and activate it. On the existing Kodanote deployment, vendor it into the WordPress repository before deploying because production disallows file modifications.
+1. Build with `python3 scripts/package.py`, then upload `dist/kodanote-mcp-0.3.1.zip` in **Plugins → Add New → Upload Plugin**. Alternatively copy this directory to `wp-content/plugins/kodanote-mcp` and activate it. On the existing Kodanote deployment, vendor it into the WordPress repository before deploying because production disallows file modifications.
 2. Use HTTPS and pretty permalinks. Activate per site; network-wide activation is deliberately rejected.
 3. Open **Users → MCP Connections**, or **Profile → MCP Connections** for users who cannot manage users, and copy the displayed endpoint:
 
@@ -220,6 +220,7 @@ Public registration is limited to 20 requests per IP per hour and 1,000 per site
 - Route `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` through WordPress instead of blocking them as dotfiles. Path-qualified discovery URLs are also handled. These endpoints must return JSON directly, not a theme HTML page or a login redirect.
 - WordPress in a subdirectory needs its domain-root well-known requests routed to its front controller. The issuer path is included in RFC 8414 discovery, e.g. `/.well-known/oauth-authorization-server/blog` for `https://example.com/blog`.
 - Exclude the MCP/OAuth endpoints and consent responses from CDN/page caching. Responses include `Cache-Control: no-store`.
+- Consent submits to the current origin. Its completion page uses a nonce-protected navigation script and a Continue link to return to the client, keeping `form-action 'self'` without blocking external OAuth callbacks.
 - HTTPS must be configured in WordPress and recognized by `is_ssl()` on the request. If TLS terminates at a reverse proxy, configure HTTPS recognition only from that trusted proxy; this plugin does not blindly trust forwarded headers.
 - Requests without an Origin header (typical server clients) are supported. Browser Origins must match the site or the built-in `https://claude.ai` origin. Add other trusted browser origins explicitly:
 

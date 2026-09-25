@@ -3,7 +3,7 @@ Contributors: kodanote
 Tags: mcp, oauth, ai, content
 Requires at least: 6.5
 Requires PHP: 8.1
-Stable tag: 0.3.0
+Stable tag: 0.3.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -42,6 +42,9 @@ No. Use a client supporting Streamable HTTP and OAuth discovery/registration, or
 No. It exposes only the documented content, appearance and administration tools. Plugin/user management currently provides inventories; role changes, installation, arbitrary PHP, and permanent deletion are not exposed.
 
 == Changelog ==
+
+= 0.3.1 =
+Fix browser Content Security Policy blocking the return to an MCP client after OAuth approval or cancellation. Keep consent submissions on the current origin and preserve nonce, session and exact callback validation.
 
 = 0.3.0 =
 Header/footer discovery and creation, reusable block navigation menus, targeted nested layout edits preserving theme pattern references, and global widths/gaps/padding. Expands routine site settings to homepage/blog selection, safe permalink presets, feeds, discussion, avatars and image sizes. Adds filterable MCP mutation history and guarded undo with separate audit scopes. 31 capability-gated tools; classic PHP themes and page builders need separate integrations.

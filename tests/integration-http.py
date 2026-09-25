@@ -71,6 +71,54 @@ class FormParser(HTMLParser):
             self.fields[attrs["name"]] = attrs.get("value", "")
 
 
+class CompletionParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.scripts = []
+        self.links = []
+        self.in_script = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "script":
+            self.scripts.append({"nonce": attrs.get("nonce"), "body": ""})
+            self.in_script = True
+        if tag == "a":
+            self.links.append(attrs.get("href"))
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.in_script = False
+
+    def handle_data(self, data):
+        if self.in_script:
+            self.scripts[-1]["body"] += data
+
+
+def consent_callback(status, headers, html):
+    check(status == 200 and not headers.get("Location"),
+          "consent finishes on the same origin without a form redirect chain")
+    parser = CompletionParser()
+    parser.feed(html)
+    check(len(parser.scripts) == 1, "completion has exactly one navigation script")
+    script = parser.scripts[0]
+    nonce = script["nonce"]
+    policy = headers.get("Content-Security-Policy", "")
+    check(nonce and re.fullmatch(r"[A-Za-z0-9_-]{43}", nonce)
+          and policy == "default-src 'none'; script-src 'nonce-" + nonce
+          + "'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+          "completion permits only its nonced script and keeps form and frame restrictions")
+    match = re.fullmatch(r"window\.location\.replace\((.+)\);", script["body"])
+    check(match is not None, "callback navigation replaces the completed consent page")
+    callback = json.loads(match.group(1))
+    check(parser.links == [callback], "script and no-JavaScript fallback use the same callback")
+    check("no-store" in headers.get("Cache-Control", "")
+          and headers.get("Referrer-Policy") == "no-referrer"
+          and headers.get("X-Frame-Options") == "DENY",
+          "completion prevents caching, referrer leakage and framing")
+    return callback
+
+
 def check(condition, message):
     global CHECKS
     if not condition:
@@ -86,10 +134,10 @@ def json_error(response, error=None):
     )
 
 
-def register(client, name="Integration client", auth="none"):
+def register(client, name="Integration client", auth="none", redirect=REDIRECT):
     status, _, body = client.request(
         API + "/oauth/register", "POST",
-        {"client_name": name, "redirect_uris": [REDIRECT],
+        {"client_name": name, "redirect_uris": [redirect],
          "token_endpoint_auth_method": auth,
          "grant_types": ["authorization_code", "refresh_token"],
          "response_types": ["code"]},
@@ -113,22 +161,27 @@ def login(role):
     return client
 
 
-def authorize(session, registration, scope="content:read content:write", decision="allow", tamper_nonce=False, other_session=None, selected_scopes=None, extra_fields=None):
+def authorize(session, registration, scope="content:read content:write", decision="allow", tamper_nonce=False, other_session=None, selected_scopes=None, extra_fields=None, state=None):
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-    state = secrets.token_urlsafe(16)
+    state = secrets.token_urlsafe(16) if state is None else state
+    redirect = registration["redirect_uris"][0]
     parameters = {
         "action": "kodanote_mcp_authorize", "response_type": "code",
-        "client_id": registration["client_id"], "redirect_uri": REDIRECT,
+        "client_id": registration["client_id"], "redirect_uri": redirect,
         "scope": scope, "state": state, "resource": RESOURCE,
         "code_challenge": challenge, "code_challenge_method": "S256",
     }
     url = BASE + "/wp-admin/admin-post.php?" + urllib.parse.urlencode(parameters)
-    status, _, html = session.request(url)
+    status, headers, html = session.request(url)
     check(status == 200 and isinstance(html, str) and "_wpnonce" in html,
           "authorization requires rendered consent")
     parser = FormParser()
     parser.feed(html)
+    check("form-action 'self';" in headers.get("Content-Security-Policy", "")
+          and "script-src" not in headers.get("Content-Security-Policy", "")
+          and parser.action.startswith("/") and not parser.action.startswith("//"),
+          "consent form stays on the current origin under its restrictive policy")
     parser.fields["decision"] = decision
     if selected_scopes is not None:
         selected_fields = {"scope_" + item.replace(":", "_") for item in selected_scopes}
@@ -143,21 +196,24 @@ def authorize(session, registration, scope="content:read content:write", decisio
     if other_session is not None:
         check(other_session.request(target, "POST", parser.fields, form=True)[0] == 403,
               "consent is bound to its original WordPress user and session")
-    status, headers, _ = session.request(
+    status, headers, html = session.request(
         target, "POST", parser.fields, form=True
     )
-    check(status in (302, 303), "consent returns an OAuth redirect")
-    destination = urllib.parse.urlparse(headers.get("Location", ""))
+    destination = urllib.parse.urlparse(consent_callback(status, headers, html))
     query = urllib.parse.parse_qs(destination.query)
-    check(destination.scheme + "://" + destination.netloc + destination.path == REDIRECT
+    expected = urllib.parse.urlparse(redirect)
+    check((destination.scheme, destination.netloc, destination.path)
+          == (expected.scheme, expected.netloc, expected.path)
           and query.get("state") == [state], "consent preserves registered redirect and state")
-    if decision == "deny":
+    check(all(query.get(key) == value for key, value in urllib.parse.parse_qs(expected.query).items()),
+          "callback preserves registered query parameters")
+    if decision == "deny" or selected_scopes == []:
         check(query.get("error") == ["access_denied"] and "code" not in query,
               "denied consent does not issue an authorization code")
         return None
     check("code" in query, "approved consent issues an authorization code")
     return {"grant_type": "authorization_code", "code": query["code"][0],
-            "redirect_uri": REDIRECT, "client_id": registration["client_id"],
+            "redirect_uri": redirect, "client_id": registration["client_id"],
             "code_verifier": verifier, "resource": RESOURCE}
 
 
@@ -325,6 +381,15 @@ def main():
           "WordPress login cookies do not substitute for MCP bearer authorization")
     authorize(contributor, registration, decision="deny")
     authorize(contributor, registration, tamper_nonce=True, other_session=author)
+    authorize(contributor, registration, selected_scopes=[])
+    for callback in (
+        'https://client.example.test:9443/callback?next=%2Fconnect&label=%22%3C%2Fscript%3E%26',
+        'http://127.0.0.1:43129/callback',
+        'http://[::1]:43129/callback',
+    ):
+        callback_client = register(client, redirect=callback)
+        fields = authorize(contributor, callback_client, state='quote"</script><script>bad()</script>&')
+        check(token(client, fields)[0] == 200, "callback variant completes authorization and PKCE exchange")
     credentials, used_fields = grant(contributor, registration)
     check(json_error(token(client, used_fields)), "authorization codes cannot be replayed")
     check(rpc(client, credentials["access_token"], "tools/list")[0] == 401,
