@@ -380,6 +380,11 @@ final class Audit {
 			$config = json_decode( $record['post_content'], true );
 			$current = array( 'theme' => get_stylesheet(), 'settings' => $config['settings'] ?? array(), 'styles' => $config['styles'] ?? array() );
 			if ( self::fingerprint( $current ) !== self::fingerprint( $expected_after ) ) { return self::error( 'drift', 'Global styles changed during restoration preparation. No restore was performed.', 409 ); }
+			if ( ! current_user_can( 'edit_css' ) && ( in_array( 'custom_css', $context['fields'], true ) || Appearance_Tools::has_custom_css( $before['styles'] ) || Appearance_Tools::has_custom_css( $current['styles'] ) ) ) {
+				return self::error( 'forbidden', 'Restoring or preserving Additional CSS requires the edit_css capability. No global styles were restored.', 403 );
+			}
+			$preserved = Appearance_Tools::validate_global_styles_preservation( $before['settings'], $before['styles'] );
+			if ( is_wp_error( $preserved ) ) { return $preserved; }
 			$request = new \WP_REST_Request( 'POST', '/wp/v2/global-styles/' . $id );
 			$request->set_body_params( array( 'context' => 'edit', 'settings' => $before['settings'], 'styles' => $before['styles'] ) );
 			$response = rest_do_request( $request );

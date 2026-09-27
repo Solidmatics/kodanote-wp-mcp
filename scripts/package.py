@@ -4,7 +4,7 @@ from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
 
 root = Path(__file__).resolve().parents[1]
-output = root / 'dist' / 'kodanote-mcp-0.3.1.zip'
+output = root / 'dist' / 'kodanote-mcp-0.3.2.zip'
 output.parent.mkdir(exist_ok=True)
 files = [root / name for name in ('kodanote-mcp.php', 'uninstall.php', 'readme.txt', 'README.md', 'LICENSE')]
 files += sorted((root / 'includes').glob('*.php'))

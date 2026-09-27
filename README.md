@@ -4,7 +4,7 @@ A standalone WordPress plugin that gives remote MCP clients role-aware content, 
 
 ## Install and connect
 
-1. Build with `python3 scripts/package.py`, then upload `dist/kodanote-mcp-0.3.1.zip` in **Plugins → Add New → Upload Plugin**. Alternatively copy this directory to `wp-content/plugins/kodanote-mcp` and activate it. On the existing Kodanote deployment, vendor it into the WordPress repository before deploying because production disallows file modifications.
+1. Build with `python3 scripts/package.py`, then upload `dist/kodanote-mcp-0.3.2.zip` in **Plugins → Add New → Upload Plugin**. Alternatively copy this directory to `wp-content/plugins/kodanote-mcp` and activate it. On the existing Kodanote deployment, vendor it into the WordPress repository before deploying because production disallows file modifications.
 2. Use HTTPS and pretty permalinks. Activate per site; network-wide activation is deliberately rejected.
 3. Open **Users → MCP Connections**, or **Profile → MCP Connections** for users who cannot manage users, and copy the displayed endpoint:
 
@@ -75,7 +75,7 @@ Example tool call:
 | --- | --- | --- |
 | `get_theme` | `appearance:read` | `edit_posts`, `edit_pages`, or `edit_theme_options` |
 | `get_global_styles` | `appearance:read` | `edit_posts`, `edit_pages`, or `edit_theme_options` |
-| `update_global_styles` | `appearance:write` | `edit_theme_options` |
+| `update_global_styles` | `appearance:write` | `edit_theme_options`; also `edit_css` when supplying or preserving custom CSS |
 | `list_templates` / `get_template` | `appearance:read` | `edit_theme_options` |
 | `create_template` / `update_template` | `appearance:write` | `edit_theme_options` |
 | `get_layout` | `appearance:read` | `edit_theme_options` |
@@ -92,8 +92,17 @@ Example tool call:
 - `font_family_slug`, `font_size_slug`: existing typography preset slugs; `null` removes that override.
 - `content_width`, `wide_width`, `block_gap`: nonnegative CSS lengths such as `720px`, `80rem`, or `0`; `null` removes that override.
 - `padding`: an object with supplied `top`, `right`, `bottom`, and/or `left` lengths. Unspecified sides are preserved; a `null` side removes that side's override, and `padding: null` removes all user padding overrides. Supported units are `px`, `rem`, `em`, `%`, `vw`, and `vh`. Expressions such as `calc()` are not accepted as new values.
+- `custom_css`: the complete replacement for the user's Global Styles Additional CSS, up to 50,000 characters. Omit it to preserve current CSS, use `""` to save an empty value, or `null` to remove the user override. This changes the `styles.css` text stored in WordPress's database; it does not edit a theme stylesheet file.
 
 Other user settings and styles are preserved. Global style edits require a theme with `theme.json`. Classic-theme reads also report standard editor palettes and standard background/header color customizations, but arbitrary stylesheet rules, theme-specific Customizer options and page-builder data need dedicated integrations.
+
+For CSS changes, first read `get_global_styles` and retain the complete `user.styles.css` value (absent means no user override). Edit only the intended rules, then submit the replacement with the returned `version`. The read response's `writable` flag describes general appearance access; `css_writable` also requires native `edit_css` permission. Both flags describe WordPress capabilities and theme support, not the connection's OAuth write scopes. A connection still needs `appearance:write` to save.
+
+CSS uses the same native validation and save filters as the Site Editor, including rejection of unsafe STYLE-element closing markup. This is not a CSS syntax linter: selectors, media queries, expressions and quoted content accepted by WordPress remain intact. Invalid input is checked before creating a missing user Global Styles record. A CSS update or reset requires `edit_css`; so does any other global-style update when existing root or nested custom CSS would otherwise be stripped by WordPress's permission filtering. In that case the tool fails without changing the configuration. Existing audit snapshots include CSS, and undo applies the same permission and drift safeguards before restoring it.
+
+For callers without `unfiltered_html`, updates and undo also check the complete proposed configuration against native Global Styles filtering before saving. If WordPress would discard settings or styles, the operation fails without modifying the record. Ordinary edits remain available when that filtering preserves the configuration.
+
+After deploying a plugin update, refresh the client's MCP tool discovery to see the new `custom_css` argument. Existing appearance scopes remain sufficient; no additional OAuth scope is introduced.
 
 Template tools accept `type: "template"` or `"template_part"` and exact IDs returned by `list_templates`. Filter parts by `area: "header"` or `"footer"`, or find templates by `search`. `update_template` requires `id` and `version`, and accepts title, description or complete replacement block markup; parts also accept an `area`. It creates/updates database overrides through the Site Editor controller, never writes PHP/theme files, and requires block-template support. These edits and global style edits affect the live site. Width and spacing effects depend on the theme and individual blocks' layout support.
 
@@ -189,7 +198,7 @@ History is retained for 90 days in this site's `kodanote_mcp_audit` table. Indiv
 - No generic REST proxy, arbitrary options/meta access, PHP/shell execution, or filesystem/theme-source edits is exposed. Add a dedicated tool and capability/scope policy for further integrations.
 - User/plugin tools are inventories: no account/role changes, plugin installation/activation, theme switching, or WordPress updates.
 - Media tools manage existing metadata; there is no upload, URL sideload, binary replacement or file deletion tool.
-- Global appearance writes cover the documented colors, typography presets, widths, gaps and padding. Block templates/parts and block navigation are supported. Classic PHP header/footer files, classic menu locations, Customizer panels, widgets, arbitrary CSS and page-builder internals require dedicated integrations.
+- Global appearance writes cover the documented colors, typography presets, widths, gaps, padding and the user's Global Styles Additional CSS. Block templates/parts and block navigation are supported. Theme stylesheet files, classic PHP header/footer files, classic menu locations, Customizer panels, widgets and page-builder internals require dedicated integrations.
 - Content deletion remains trash-only; existing per-item and publish capability checks still apply.
 
 ## OAuth and transport

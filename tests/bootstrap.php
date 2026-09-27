@@ -29,6 +29,9 @@ flush_rewrite_rules(false);
 $users = array('admin' => get_user_by('login', 'mcp_admin')->ID);
 add_role('taxonomy_manager', 'Taxonomy-only fixture', array('read' => true, 'manage_categories' => true));
 add_role('audit_manager', 'Audit-only administration fixture', array('read' => true, 'manage_options' => true));
+add_role('design_without_css', 'Appearance without CSS fixture', array(
+    'read' => true, 'manage_options' => true, 'edit_theme_options' => true, 'unfiltered_html' => false,
+));
 foreach (array('contributor', 'author', 'editor', 'taxonomy_manager') as $role) {
     $id = wp_insert_user(array(
         'user_login' => 'mcp_' . $role,

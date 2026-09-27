@@ -58,6 +58,10 @@ cat > "$test_root/wordpress/wp-content/themes/mcp-test/templates/index.html" <<'
 <!-- wp:paragraph --><p>Template fixture</p><!-- /wp:paragraph -->
 <!-- wp:template-part {"slug":"footer","theme":"mcp-test","tagName":"footer"} /-->
 HTML
+mkdir -p "$test_root/wordpress/wp-content/themes/mcp-css-empty/templates"
+printf '/* Theme Name: CSS without saved styles fixture */\n' > "$test_root/wordpress/wp-content/themes/mcp-css-empty/style.css"
+cp "$test_root/wordpress/wp-content/themes/mcp-test/theme.json" "$test_root/wordpress/wp-content/themes/mcp-css-empty/theme.json"
+cp "$test_root/wordpress/wp-content/themes/mcp-test/templates/index.html" "$test_root/wordpress/wp-content/themes/mcp-css-empty/templates/index.html"
 cat > "$test_root/wordpress/wp-content/themes/mcp-test/parts/header.html" <<'HTML'
 <!-- wp:group {"layout":{"type":"constrained"}} --><div class="wp-block-group"><!-- wp:site-title /--><!-- wp:navigation {"ref":0} /--></div><!-- /wp:group -->
 HTML

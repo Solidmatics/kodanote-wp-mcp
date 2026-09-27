@@ -22,7 +22,7 @@ final class Appearance_Tools {
 		return array(
 			self::definition( 'get_theme', 'Get active theme', 'Read the active theme, parent theme, supported appearance features, and standard classic-theme editor colors. Custom CSS and arbitrary theme options are not inspected.', array(), array(), true ),
 			self::definition( 'get_global_styles', 'Get theme colors and styles', 'Read merged WordPress default, parent/child theme, and user global settings/styles, including color palettes and typography presets. Includes user overrides and a version for updates. Classic themes expose the settings WordPress knows about; arbitrary CSS is not parsed.', array(), array(), true ),
-			self::definition( 'update_global_styles', 'Update global colors, typography, and layout', 'Update only supplied global appearance controls, content/wide widths, block gap, and padding. Replaces the user palette when supplied; an empty palette removes user palette entries. Preserves other user settings/styles. Changes affect the live site; layout effects depend on theme/block support. Requires edit_theme_options and a theme.json theme. Read get_global_styles first.', array(
+			self::definition( 'update_global_styles', 'Update global colors, typography, layout, and CSS', 'Update only supplied global appearance controls, content/wide widths, block gap, padding, and Additional CSS. Replaces the user palette when supplied; an empty palette removes user palette entries. Preserves other user settings/styles. Changes affect the live site; layout effects depend on theme/block support. Requires edit_theme_options and a theme.json theme. CSS writes or preservation of existing CSS also require edit_css. Read get_global_styles first.', array(
 				'version' => $version,
 				'palette' => array( 'type' => 'array', 'maxItems' => 100, 'items' => self::schema( array(
 					'slug' => $slug,
@@ -32,6 +32,7 @@ final class Appearance_Tools {
 				'background_color' => $color, 'text_color' => $color, 'link_color' => $color,
 				'font_family_slug' => $preset, 'font_size_slug' => $preset,
 				'content_width' => $length, 'wide_width' => $length, 'block_gap' => $length, 'padding' => $padding,
+				'custom_css' => array( 'type' => array( 'string', 'null' ), 'maxLength' => 50000, 'description' => 'Complete replacement for user Additional CSS, up to 50,000 characters. Omit to preserve; an empty string saves empty CSS; null removes the override. Requires edit_css and native WordPress CSS validation.' ),
 			), array( 'version' ), false ),
 			self::definition( 'list_templates', 'List block templates and parts', 'List block templates or template parts available to the active theme. Requires edit_theme_options. Only database overrides can be changed; theme source files are never written.', array(
 				'type' => $type,
@@ -146,11 +147,55 @@ final class Appearance_Tools {
 			),
 			'version' => self::global_styles_version( $record ),
 			'writable' => current_user_can( 'edit_theme_options' ) && wp_theme_has_theme_json(),
+			'css_writable' => current_user_can( 'edit_theme_options' ) && current_user_can( 'edit_css' ) && wp_theme_has_theme_json(),
 		);
 	}
 
 	private static function global_styles_version( array $record ): string {
 		return hash( 'sha256', wp_json_encode( array( get_stylesheet(), $record['ID'] ?? 0, $record['post_modified_gmt'] ?? '', $record['post_content'] ?? '' ) ) );
+	}
+
+	/** Detect CSS that core would otherwise strip when saving without edit_css. */
+	public static function has_custom_css( array $styles ): bool {
+		if ( array_key_exists( 'css', $styles ) ) {
+			return true;
+		}
+		foreach ( $styles as $value ) {
+			if ( is_array( $value ) && self::has_custom_css( $value ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Refuse writes when core's permission-dependent filter would discard configuration. */
+	public static function validate_global_styles_preservation( array $settings, array $styles ) {
+		if ( current_user_can( 'unfiltered_html' ) ) {
+			return true;
+		}
+		$config = array( 'version' => \WP_Theme_JSON::LATEST_SCHEMA, 'isGlobalStylesUserThemeJSON' => true, 'settings' => $settings, 'styles' => $styles );
+		$filtered = json_decode( wp_unslash( wp_filter_global_styles_post( wp_slash( wp_json_encode( $config ) ) ) ), true );
+		$sort = static function ( $value ) use ( &$sort ) {
+			if ( ! is_array( $value ) ) { return $value; }
+			if ( ! array_is_list( $value ) ) { ksort( $value ); }
+			return array_map( $sort, $value );
+		};
+		$expected = array( 'settings' => $settings, 'styles' => $styles );
+		$actual = is_array( $filtered ) ? array( 'settings' => $filtered['settings'] ?? array(), 'styles' => $filtered['styles'] ?? array() ) : null;
+		if ( wp_json_encode( $sort( $expected ) ) !== wp_json_encode( $sort( $actual ) ) ) {
+			return self::error( 'global_styles_filtered', 'WordPress would filter this global styles configuration with your current permissions. No global styles were changed.', 403 );
+		}
+		return true;
+	}
+
+	/** Use core validation before a missing user styles record could be created. */
+	private static function validate_custom_css( string $css ) {
+		$controller = new class() extends \WP_REST_Global_Styles_Controller {
+			public function validate_css_input( string $css ) {
+				return $this->validate_custom_css( $css );
+			}
+		};
+		return $controller->validate_css_input( $css );
 	}
 
 	/** Patch only bounded controls, then let the core controller validate and save. */
@@ -174,6 +219,19 @@ final class Appearance_Tools {
 		if ( ! is_array( $settings ) || ! is_array( $styles ) ) {
 			return self::error( 'invalid_global_styles', 'The existing settings or styles are invalid and cannot safely be updated.', 409 );
 		}
+		$css_supplied = array_key_exists( 'custom_css', $input );
+		if ( ! current_user_can( 'edit_css' ) && ( $css_supplied || self::has_custom_css( $styles ) ) ) {
+			return self::error( 'forbidden', 'Editing or preserving Additional CSS requires the edit_css capability. No global styles were changed.', 403 );
+		}
+		if ( $css_supplied ) {
+			if ( null !== $input['custom_css'] ) {
+				$valid = self::validate_custom_css( $input['custom_css'] );
+				if ( is_wp_error( $valid ) ) {
+					return $valid;
+				}
+			}
+			self::set_path( $styles, array( 'css' ), $input['custom_css'] );
+		}
 		$effective_settings = wp_get_global_settings();
 		if ( array_key_exists( 'palette', $input ) ) {
 			$slugs = array_column( $input['palette'], 'slug' );
@@ -187,7 +245,7 @@ final class Appearance_Tools {
 				}
 			}
 			unset( $entry );
-			$settings['color']['palette'] = $input['palette'];
+			self::set_path( $settings, array( 'color', 'palette' ), $input['palette'] ? $input['palette'] : null );
 			$effective_settings['color']['palette']['custom'] = $input['palette'];
 		}
 		$controls = array(
@@ -242,6 +300,10 @@ final class Appearance_Tools {
 					self::set_path( $styles, array( 'spacing', 'padding', $side ), $value );
 				}
 			}
+		}
+		$preserved = self::validate_global_styles_preservation( $settings, $styles );
+		if ( is_wp_error( $preserved ) ) {
+			return $preserved;
 		}
 		if ( ! $record ) {
 			$record = \WP_Theme_JSON_Resolver::get_user_data_from_wp_global_styles( wp_get_theme(), true );

@@ -313,6 +313,38 @@ def fixture_storage(post_id=0):
     return json.loads(result.stdout)
 
 
+def fixture_global_styles(configuration=None, theme=None):
+    """Read or restore only disposable theme fixtures, including native CSS output."""
+    result = subprocess.run(["php", "-r", r'''
+        $root = getenv('KODANOTE_MCP_TEST_ROOT');
+        if (!$root || !str_contains($root, '/kodanote-mcp-test.')) { exit(1); }
+        require $root . '/wp-load.php';
+        wp_set_current_user((int) $argv[1]);
+        if ($argv[3]) {
+            if (!in_array($argv[3], array('mcp-test', 'mcp-css-empty'), true)) { exit(1); }
+            switch_theme($argv[3]);
+        }
+        if (!in_array(get_stylesheet(), array('mcp-test', 'mcp-css-empty'), true)) { exit(1); }
+        $record = WP_Theme_JSON_Resolver::get_user_data_from_wp_global_styles(wp_get_theme(), false);
+        if ($argv[2]) {
+            $config = json_decode($argv[2], true, 512, JSON_THROW_ON_ERROR);
+            if (!$record || empty($config['isGlobalStylesUserThemeJSON'])) { exit(1); }
+            $saved = wp_update_post(array('ID' => $record['ID'], 'post_content' => wp_slash(wp_json_encode($config))), true);
+            if (is_wp_error($saved)) { throw new RuntimeException($saved->get_error_message()); }
+        }
+        wp_clean_theme_json_cache();
+        $record = WP_Theme_JSON_Resolver::get_user_data_from_wp_global_styles(wp_get_theme(), false);
+        echo wp_json_encode(array(
+            'id' => (int) ($record['ID'] ?? 0),
+            'config' => isset($record['post_content']) ? json_decode($record['post_content'], true) : null,
+            'stylesheet' => wp_get_global_stylesheet(array('custom-css')),
+        ));
+    ''', str(FIXTURES["users"]["admin"]),
+        json.dumps(configuration) if configuration is not None else "", theme or ""],
+        check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
 def fixture_fault(value):
     subprocess.run(["php", "-r", r'''
         require getenv('KODANOTE_MCP_TEST_ROOT') . '/wp-load.php';
@@ -661,6 +693,7 @@ def expanded_permission_tests(client, contributor, author, registration, content
     check(colors_in(persisted["settings"]["color"]["palette"]).get("secondary") == "#123abc"
           and persisted["user"]["styles"]["color"]["background"] == "#fefefe",
           "global styles changes persist across independent HTTP requests")
+    global_styles_css_tests(client, admin_access, editor_access, selected_tokens["access_token"])
 
     templates = assert_tool(client, admin_access, "list_templates")
     template = next(item for item in templates["items"] if item["id"].endswith("//index"))
@@ -746,6 +779,237 @@ def expanded_permission_tests(client, contributor, author, registration, content
         set_fixture_role(FIXTURES["users"]["admin"], "administrator")
     routine_settings_tests(client, admin_access)
     audit_tests(client, admin, registration, admin_access, editor_access, read_only_tokens["access_token"])
+
+
+def global_styles_css_tests(client, access, editor_access, readonly_access):
+    definitions = rpc(client, access, "tools/list")[2]["result"]["tools"]
+    definition = next(item for item in definitions if item["name"] == "update_global_styles")
+    schema = definition["inputSchema"]["properties"].get("custom_css", {})
+    check(set(schema.get("type", [])) == {"string", "null"}
+          and schema.get("maxLength") == 50000
+          and "custom_css" not in definition["inputSchema"].get("required", []),
+          "CSS discovery exposes an optional string/null field bounded to 50000 characters")
+    original = fixture_global_styles()["config"]
+    css = ('.mcp-css-roundtrip::before { content: "Kodanote\'s \\"quoted\\" note"; '
+           'margin-inline: calc(100% - 2rem); }\n'
+           '@media (max-width: 640px) { .mcp-css-roundtrip { color: #123abc; } }')
+    try:
+        before = assert_tool(client, access, "get_global_styles")
+        check(before.get("css_writable") is True
+              and assert_tool(client, editor_access, "get_global_styles").get("css_writable") is False,
+              "CSS reads distinguish administrator and editor writability")
+        changed = assert_tool(client, access, "update_global_styles", {
+            "version": before["version"], "custom_css": css})
+        persisted = assert_tool(client, access, "get_global_styles")
+        stored = fixture_global_styles()
+        expected = json.loads(json.dumps(original))
+        expected.setdefault("styles", {})["css"] = css
+        check(persisted["user"]["styles"].get("css") == css and stored["config"] == expected,
+              "CSS roundtrips quotes, apostrophes and media queries without changing unrelated configuration")
+        check('.mcp-css-roundtrip::before' in stored["stylesheet"]
+              and '@media (max-width: 640px)' in stored["stylesheet"]
+              and 'calc(100% - 2rem)' in stored["stylesheet"]
+              and 'Kodanote\'s \\"quoted\\" note' in stored["stylesheet"],
+              "saved CSS appears in WordPress's actual generated custom stylesheet")
+        check(not tool_ok(tool(client, access, "update_global_styles", {
+            "version": before["version"], "custom_css": ".stale { color: red; }"}))
+              and fixture_global_styles()["config"] == expected,
+              "a stale CSS version cannot overwrite the saved stylesheet")
+
+        omitted = assert_tool(client, access, "update_global_styles", {
+            "version": persisted["version"], "background_color": "#102030"})
+        check(fixture_global_styles()["config"]["styles"]["css"] == css,
+              "an unrelated appearance edit preserves omitted CSS exactly")
+        undo_change(client, access, omitted)
+        check(fixture_global_styles()["config"] == expected,
+              "undo of an unrelated appearance edit also preserves existing CSS")
+
+        current = assert_tool(client, access, "get_global_styles")
+        palette_reset = assert_tool(client, access, "update_global_styles", {
+            "version": current["version"], "palette": []})
+        palette_expected = json.loads(json.dumps(expected))
+        del palette_expected["settings"]["color"]["palette"]
+        if not palette_expected["settings"]["color"]:
+            del palette_expected["settings"]["color"]
+        check(fixture_global_styles()["config"] == palette_expected,
+              "an explicit empty palette removes only the user palette while preserving CSS and typography")
+        undo_change(client, access, palette_reset)
+        check(fixture_global_styles()["config"] == expected,
+              "palette-reset undo restores the exact prior palette and unrelated appearance configuration")
+
+        invalid_values = [
+            (42, "integer"), (False, "boolean"), ({"css": "body {}"}, "object"),
+            ([], "array"), ("x" * 50001, "oversized string"),
+            ('<style>.unsafe { color: red; }</style>', "style markup"),
+            ('</style><script>alert("fixture")</script><style>', "closing-style injection"),
+            ('.unsafe { color: red; }</sty', "partial closing-style markup"),
+        ]
+        for value, label in invalid_values:
+            current = assert_tool(client, access, "get_global_styles")
+            check(not tool_ok(tool(client, access, "update_global_styles", {
+                "version": current["version"], "custom_css": value, "background_color": "#990000"})),
+                  "CSS rejects " + label)
+            check(fixture_global_styles()["config"] == expected
+                  and assert_tool(client, access, "get_global_styles")["version"] == current["version"],
+                  "rejected " + label + " leaves CSS, other supplied controls and version unchanged")
+
+        boundary = "/*" + "é" * 49996 + "*/"
+        current = assert_tool(client, access, "get_global_styles")
+        bounded = assert_tool(client, access, "update_global_styles", {
+            "version": current["version"], "custom_css": boundary})
+        check(len(boundary) == 50000 and fixture_global_styles()["config"]["styles"]["css"] == boundary,
+              "the CSS bound accepts exactly 50000 Unicode characters rather than counting bytes")
+        undo_change(client, access, bounded)
+
+        current = assert_tool(client, access, "get_global_styles")
+        for denied_access, label in ((editor_access, "editor"), (readonly_access, "read-only appearance grant")):
+            for value in (".denied { color: red; }", "", None):
+                check(not tool_ok(tool(client, denied_access, "update_global_styles", {
+                    "version": current["version"], "custom_css": value})),
+                      label + " cannot write, empty or reset CSS")
+        check(fixture_global_styles()["config"] == expected,
+              "denied editor and scope-limited requests preserve all appearance data")
+
+        entry = assert_tool(client, access, "get_audit_entry", {"id": changed["audit"]["id"]})
+        check(entry["before"]["styles"] == original["styles"]
+              and entry["after"]["styles"] == expected["styles"]
+              and entry["before"]["settings"] == entry["after"]["settings"] == original["settings"],
+              "CSS audit captures exact before/after styles and preserved settings")
+        try:
+            set_fixture_role(FIXTURES["users"]["admin"], "design_without_css")
+            restricted = assert_tool(client, access, "get_global_styles")
+            check(restricted.get("writable") is True and restricted.get("css_writable") is False,
+                  "an appearance administrator without native CSS permission sees separate writability")
+            for value in (".denied { color: red; }", "", None):
+                check(not tool_ok(tool(client, access, "update_global_styles", {
+                    "version": restricted["version"], "custom_css": value})),
+                      "native CSS permission is required for replacement, emptying and reset")
+            check(not tool_ok(tool(client, access, "update_global_styles", {
+                "version": restricted["version"], "background_color": "#990000"})),
+                  "missing CSS permission cannot strip existing root CSS through an unrelated edit")
+            check(not tool_ok(tool(client, access, "revert_audit_entry", {
+                "id": entry["id"], "version": entry["version"]})),
+                  "an audit administrator losing CSS permission cannot undo a CSS mutation")
+            check(fixture_global_styles()["config"] == expected,
+                  "all missing-CSS-permission paths leave the complete configuration unchanged")
+        finally:
+            set_fixture_role(FIXTURES["users"]["admin"], "administrator")
+        entry = assert_tool(client, access, "get_audit_entry", {"id": entry["id"]})
+        assert_tool(client, access, "revert_audit_entry", {"id": entry["id"], "version": entry["version"]})
+        check(fixture_global_styles()["config"]["styles"] == original["styles"]
+              and fixture_global_styles()["config"]["settings"] == original["settings"],
+              "eligible CSS undo restores the exact original styles and settings")
+        reverted = assert_tool(client, access, "get_audit_entry", {"id": entry["id"]})
+        check(not tool_ok(tool(client, access, "revert_audit_entry", {
+            "id": reverted["id"], "version": reverted["version"]})), "CSS audit undo rejects replay")
+
+        current = assert_tool(client, access, "get_global_styles")
+        first = assert_tool(client, access, "update_global_styles", {"version": current["version"], "custom_css": css})
+        first_entry = assert_tool(client, access, "get_audit_entry", {"id": first["audit"]["id"]})
+        latest_css = ".mcp-newer-css { color: #334455; }"
+        newer = assert_tool(client, access, "update_global_styles", {"version": first["version"], "custom_css": latest_css})
+        check(not tool_ok(tool(client, access, "revert_audit_entry", {
+            "id": first_entry["id"], "version": first_entry["version"]}))
+              and fixture_global_styles()["config"]["styles"]["css"] == latest_css,
+              "CSS undo detects intervening edits and preserves the newer stylesheet")
+        empty = assert_tool(client, access, "update_global_styles", {"version": newer["version"], "custom_css": ""})
+        check(fixture_global_styles()["config"]["styles"].get("css") == "",
+              "empty-string CSS saves an explicit empty override")
+        reset = assert_tool(client, access, "update_global_styles", {"version": empty["version"], "custom_css": None})
+        reset_config = fixture_global_styles()["config"]
+        check("css" not in reset_config["styles"]
+              and reset_config["styles"] == original["styles"]
+              and reset_config["settings"] == original["settings"],
+              "null CSS removes only the user override and retains unrelated configuration")
+        reset_entry = assert_tool(client, access, "get_audit_entry", {"id": reset["audit"]["id"]})
+        try:
+            set_fixture_role(FIXTURES["users"]["admin"], "design_without_css")
+            check(not tool_ok(tool(client, access, "revert_audit_entry", {
+                "id": reset_entry["id"], "version": reset_entry["version"]})),
+                  "undo cannot restore even an empty CSS key after native CSS permission is lost")
+            current = assert_tool(client, access, "get_global_styles")
+            check(not tool_ok(tool(client, access, "update_global_styles", {
+                "version": current["version"], "background_color": "#112244"}))
+                  and fixture_global_styles()["config"] == reset_config,
+                  "an ordinary edit rejects native filtering that would erase existing unrelated settings")
+        finally:
+            set_fixture_role(FIXTURES["users"]["admin"], "administrator")
+
+        current = assert_tool(client, access, "get_global_styles")
+        ordinary = assert_tool(client, access, "update_global_styles", {
+            "version": current["version"], "background_color": "#112244"})
+        ordinary_after = fixture_global_styles()["config"]
+        ordinary_entry = assert_tool(client, access, "get_audit_entry", {"id": ordinary["audit"]["id"]})
+        try:
+            set_fixture_role(FIXTURES["users"]["admin"], "design_without_css")
+            check(not tool_ok(tool(client, access, "revert_audit_entry", {
+                "id": ordinary_entry["id"], "version": ordinary_entry["version"]}))
+                  and fixture_global_styles()["config"] == ordinary_after,
+                  "undo rejects native filtering of prior settings before causing a partial restore")
+        finally:
+            set_fixture_role(FIXTURES["users"]["admin"], "administrator")
+        undo_change(client, access, ordinary)
+
+        safe_config = json.loads(json.dumps(reset_config))
+        safe_config.pop("settings", None)
+        safe_before = fixture_global_styles(safe_config)["config"]
+        try:
+            set_fixture_role(FIXTURES["users"]["admin"], "design_without_css")
+            current = assert_tool(client, access, "get_global_styles")
+            palette_reset = assert_tool(client, access, "update_global_styles", {
+                "version": current["version"], "palette": []})
+            check(fixture_global_styles()["config"] == safe_before,
+                  "a no-CSS appearance administrator can explicitly reset an already-empty palette without side effects")
+            ordinary = assert_tool(client, access, "update_global_styles", {
+                "version": palette_reset["version"], "palette": [], "background_color": "#112244"})
+            check(fixture_global_styles()["config"]["styles"]["color"]["background"] == "#112244",
+                  "a no-CSS appearance administrator can combine a palette reset with a native-safe background edit")
+            undo_change(client, access, ordinary)
+            check(fixture_global_styles()["config"] == safe_before,
+                  "non-CSS appearance undo restores the exact native-safe configuration without CSS permission")
+        finally:
+            set_fixture_role(FIXTURES["users"]["admin"], "administrator")
+
+        nested = json.loads(json.dumps(original))
+        nested["styles"].setdefault("blocks", {})["core/paragraph"] = {"css": "& { color: #345678; }"}
+        fixture_global_styles(nested)
+        current = assert_tool(client, access, "get_global_styles")
+        ordinary = assert_tool(client, access, "update_global_styles", {
+            "version": current["version"], "background_color": "#123456"})
+        nested_after = fixture_global_styles()["config"]
+        nested_entry = assert_tool(client, access, "get_audit_entry", {"id": ordinary["audit"]["id"]})
+        try:
+            set_fixture_role(FIXTURES["users"]["admin"], "design_without_css")
+            current = assert_tool(client, access, "get_global_styles")
+            check(not tool_ok(tool(client, access, "update_global_styles", {
+                "version": current["version"], "background_color": "#990000"})),
+                  "omitted nested block CSS cannot be stripped by a caller without CSS permission")
+            check(not tool_ok(tool(client, access, "revert_audit_entry", {
+                "id": nested_entry["id"], "version": nested_entry["version"]})),
+                  "audit undo of an ordinary edit still requires permission to preserve nested CSS")
+            check(fixture_global_styles()["config"] == nested_after,
+                  "nested CSS permission failures preserve the full saved configuration")
+        finally:
+            set_fixture_role(FIXTURES["users"]["admin"], "administrator")
+    finally:
+        set_fixture_role(FIXTURES["users"]["admin"], "administrator")
+        fixture_global_styles(original)
+
+    try:
+        fixture_global_styles(theme="mcp-css-empty")
+        blank = assert_tool(client, access, "get_global_styles")
+        check(blank["user"]["id"] == 0 and fixture_global_styles()["id"] == 0,
+              "fresh theme inspection does not create a user Global Styles record")
+        check(not tool_ok(tool(client, access, "update_global_styles", {
+            "version": blank["version"], "custom_css": '</style><script>alert("fixture")</script>',
+            "background_color": "#990000"})),
+              "native CSS validation rejects illegal markup on a theme without saved user styles")
+        still_blank = assert_tool(client, access, "get_global_styles")
+        check(fixture_global_styles()["id"] == 0 and still_blank["user"]["id"] == 0
+              and still_blank["version"] == blank["version"],
+              "invalid CSS is rejected before lazy record creation or a partial appearance write")
+    finally:
+        fixture_global_styles(theme="mcp-test")
 
 
 def routine_settings_tests(client, access):

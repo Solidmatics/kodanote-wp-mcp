@@ -3,7 +3,7 @@ Contributors: kodanote
 Tags: mcp, oauth, ai, content
 Requires at least: 6.5
 Requires PHP: 8.1
-Stable tag: 0.3.1
+Stable tag: 0.3.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -13,7 +13,7 @@ Role-aware WordPress tools for remote MCP clients, with OAuth, WordPress login a
 
 Connect an OAuth-capable remote MCP client to your WordPress site. The plugin serves a stateless Streamable HTTP endpoint and its own OAuth authorization server; no external auth service or Composer dependencies are required.
 
-Supports posts/pages, categories/tags, featured images, Yoast SEO, theme colors and typography, block templates, headers/footers, block navigation menus, targeted layouts, widths and spacing, homepage/blog/permalink settings, reading/discussion/media settings, media metadata, user/plugin inventories, and MCP audit history with supported undo. Tool discovery and every operation check the user's current WordPress capabilities and delegated OAuth scopes. Custom roles work through capabilities. Consent allows selecting individual permissions or read-only access.
+Supports posts/pages, categories/tags, featured images, Yoast SEO, theme colors and typography, Global Styles Additional CSS, block templates, headers/footers, block navigation menus, targeted layouts, widths and spacing, homepage/blog/permalink settings, reading/discussion/media settings, media metadata, user/plugin inventories, and MCP audit history with supported undo. Tool discovery and every operation check the user's current WordPress capabilities and delegated OAuth scopes. Custom roles work through capabilities. Consent allows selecting individual permissions or read-only access.
 
 The plugin uses authorization codes with S256 PKCE, dynamic client registration, resource-bound access tokens, rotating refresh tokens and connection revocation. HTTPS is required. No WordPress Application Password is needed for this endpoint.
 
@@ -42,6 +42,10 @@ No. Use a client supporting Streamable HTTP and OAuth discovery/registration, or
 No. It exposes only the documented content, appearance and administration tools. Plugin/user management currently provides inventories; role changes, installation, arbitrary PHP, and permanent deletion are not exposed.
 
 == Changelog ==
+
+= 0.3.2 =
+Add versioned Global Styles Additional CSS replacement and reset through custom_css, with a 50,000-character limit, native WordPress validation and edit_css permission checks. Preserve unrelated appearance settings and expose CSS writability on reads. Prevent style updates and audit reversals from silently stripping saved CSS when the caller lacks CSS permission.
+Reject updates and reversals before saving when native permission filtering would discard unrelated settings or styles. Preserve explicit empty-palette resets by removing the user palette override.
 
 = 0.3.1 =
 Fix browser Content Security Policy blocking the return to an MCP client after OAuth approval or cancellation. Keep consent submissions on the current origin and preserve nonce, session and exact callback validation.
