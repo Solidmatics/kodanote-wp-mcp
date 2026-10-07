@@ -192,8 +192,8 @@ final class Audit {
 			'target' => $name, 'reason' => 'This operation has no safe automatic revert adapter.', 'created' => false );
 		$adapters = array( 'update_site_settings' => 'settings', 'update_global_styles' => 'global_styles',
 			'update_template' => 'template', 'update_layout' => 'template', 'update_navigation' => 'navigation',
-			'update_media' => 'media', 'update_content' => 'content', 'trash_content' => 'trash' );
-		$created = array( 'create_content' => 'content', 'create_template' => 'template', 'create_navigation' => 'navigation', 'create_term' => 'term' );
+			'update_media' => 'media', 'update_content' => 'content', 'trash_content' => 'trash', 'update_pattern' => 'pattern' );
+		$created = array( 'create_content' => 'content', 'create_template' => 'template', 'create_navigation' => 'navigation', 'create_term' => 'term', 'create_pattern' => 'pattern' );
 		$context['adapter'] = $adapters[ $name ] ?? ( $created[ $name ] ?? '' );
 		$context['created'] = isset( $created[ $name ] );
 		if ( $context['adapter'] ) { $context['reason'] = ''; }
@@ -256,7 +256,7 @@ final class Audit {
 			if ( ! $term || is_wp_error( $term ) ) { return self::error( 'not_found', 'The created term cannot be inspected.', 404 ); }
 			return array( 'id' => (int) $term->term_id, 'taxonomy' => $term->taxonomy, 'name' => $term->name, 'slug' => $term->slug, 'description' => $term->description, 'parent' => (int) $term->parent );
 		}
-		$tools = array( 'settings' => 'get_site_settings', 'template' => 'get_template', 'navigation' => 'get_navigation', 'media' => 'get_media', 'content' => 'get_content', 'trash' => 'get_content' );
+		$tools = array( 'settings' => 'get_site_settings', 'template' => 'get_template', 'navigation' => 'get_navigation', 'media' => 'get_media', 'content' => 'get_content', 'trash' => 'get_content', 'pattern' => 'get_pattern' );
 		$data = Tools::call( $tools[ $adapter ], $context['args'] );
 		if ( is_wp_error( $data ) ) { return $data; }
 		$state = self::project_snapshot( $adapter, $data );
@@ -287,6 +287,8 @@ final class Audit {
 			'navigation' => array( 'id', 'title', 'status', 'content' ),
 			'media' => array( 'id', 'title', 'caption', 'description', 'alt_text', 'parent' ),
 			'content' => array( 'id', 'type', 'status', 'title', 'content', 'excerpt', 'slug', 'date', 'categories', 'tags', 'featured_media_id', 'seo' ),
+			// Usage is derived from other posts, so it is never part of a pattern's restorable state.
+			'pattern' => array( 'id', 'status', 'title', 'content', 'sync_status', 'categories' ),
 		);
 		$state = array_intersect_key( $data, array_flip( $keys[ 'trash' === $adapter ? 'content' : $adapter ] ) );
 		if ( 'template' === $adapter ) { $state['active_theme'] = get_stylesheet(); }
@@ -358,7 +360,7 @@ final class Audit {
 	}
 
 	private static function restore_tool( array $context ): string {
-		$names = array( 'settings' => 'update_site_settings', 'global_styles' => 'update_global_styles', 'template' => 'update_template', 'navigation' => 'update_navigation', 'media' => 'update_media', 'content' => 'update_content', 'trash' => 'update_content' );
+		$names = array( 'settings' => 'update_site_settings', 'global_styles' => 'update_global_styles', 'template' => 'update_template', 'navigation' => 'update_navigation', 'media' => 'update_media', 'content' => 'update_content', 'trash' => 'update_content', 'pattern' => 'update_pattern' );
 		return $names[ $context['adapter'] ] ?? '';
 	}
 
@@ -422,7 +424,7 @@ final class Audit {
 			}
 			return Tools::call( 'get_content', array( 'id' => $id ) );
 		}
-		$reads = array( 'settings' => 'get_site_settings', 'template' => 'get_template', 'navigation' => 'get_navigation', 'media' => 'get_media', 'content' => 'get_content' );
+		$reads = array( 'settings' => 'get_site_settings', 'template' => 'get_template', 'navigation' => 'get_navigation', 'media' => 'get_media', 'content' => 'get_content', 'pattern' => 'get_pattern' );
 		$current = Tools::call( $reads[ $adapter ], $context['args'] );
 		if ( is_wp_error( $current ) ) { return $current; }
 		// Bind the fresh version to the state that was checked, rather than blessing a concurrent edit.

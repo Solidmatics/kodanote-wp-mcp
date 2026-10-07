@@ -28,6 +28,7 @@ final class Plugin {
 		add_action( 'kodanote_mcp_cleanup', array( Store::class, 'cleanup' ) );
 		add_action( 'kodanote_mcp_cleanup', array( Audit::class, 'cleanup' ) );
 		Admin::boot();
+		Pattern_Usage::boot();
 	}
 
 	public static function activate( bool $network_wide = false ): void {

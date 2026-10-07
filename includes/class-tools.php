@@ -56,7 +56,7 @@ final class Tools {
 				'description' => array( 'type' => 'string', 'maxLength' => 5000 ),
 				'parent' => array( 'type' => 'integer', 'minimum' => 0, 'description' => 'Parent category ID. Only valid for categories.' ),
 			), array( 'name' ), false ),
-		), Appearance_Tools::definitions(), Site_Tools::definitions(), Navigation_Tools::definitions(), Layout_Tools::definitions(), Audit::definitions() );
+		), Pattern_Tools::definitions(), Appearance_Tools::definitions(), Site_Tools::definitions(), Navigation_Tools::definitions(), Layout_Tools::definitions(), Audit::definitions() );
 	}
 
 	public static function required_scope( string $name ): ?string {
@@ -166,7 +166,7 @@ final class Tools {
 	}
 
 	private static function providers(): array {
-		return array( Appearance_Tools::class, Site_Tools::class, Navigation_Tools::class, Layout_Tools::class, Audit::class );
+		return array( Pattern_Tools::class, Appearance_Tools::class, Site_Tools::class, Navigation_Tools::class, Layout_Tools::class, Audit::class );
 	}
 
 	/** @return array|\WP_Error */

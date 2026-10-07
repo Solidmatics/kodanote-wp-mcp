@@ -4,7 +4,7 @@ A standalone WordPress plugin that gives remote MCP clients role-aware content, 
 
 ## Install and connect
 
-1. Build with `python3 scripts/package.py`, then upload `dist/kodanote-mcp-0.3.2.zip` in **Plugins → Add New → Upload Plugin**. Alternatively copy this directory to `wp-content/plugins/kodanote-mcp` and activate it. On the existing Kodanote deployment, vendor it into the WordPress repository before deploying because production disallows file modifications.
+1. Build with `python3 scripts/package.py`, then upload `dist/kodanote-mcp-0.4.0.zip` in **Plugins → Add New → Upload Plugin**. Alternatively copy this directory to `wp-content/plugins/kodanote-mcp` and activate it. On the existing Kodanote deployment, vendor it into the WordPress repository before deploying because production disallows file modifications.
 2. Use HTTPS and pretty permalinks. Activate per site; network-wide activation is deliberately rejected.
 3. Open **Users → MCP Connections**, or **Profile → MCP Connections** for users who cannot manage users, and copy the displayed endpoint:
 
@@ -18,6 +18,8 @@ A standalone WordPress plugin that gives remote MCP clients role-aware content, 
 **Upgrading from 0.1.0:** reconnect to request the new appearance, media and administration scopes. Existing content-only tokens and refresh tokens keep their original permissions. Version 0.1.0 client registrations also retain their content-only scope ceiling: if the client caches its registration, remove and re-add the connector so it registers again and presents fresh consent. A new registration includes all supported scopes by default.
 
 **Upgrading from 0.2.0:** header, footer, navigation and layout tools use the existing appearance scopes; broader site settings use the existing settings scopes. Audit history and undo require new `audit:read` / `audit:write` consent. Older client registrations retain their original scope ceiling, so remove/re-add the connector to register again if it cannot request the audit scopes. Existing tokens never gain new scopes automatically.
+
+**Upgrading from 0.3.x:** reusable pattern tools use the existing `content:read` / `content:write` scopes, so connections with content access discover them without reconnecting. The **Used in** column and editor panel need no setup.
 
 Revoke a connection from **MCP Connections** at any time. Access tokens last one hour. Refresh tokens rotate on every use, with an absolute 30-day authorization lifetime; reconnect after that. Changing the WordPress password also invalidates existing authorizations. Reusing a redeemed code or refresh token revokes its authorization family.
 
@@ -36,7 +38,7 @@ The accessible toolset is the intersection of **the OAuth scopes approved by the
 
 Subscribers have no MCP access with default capabilities. A custom design role with `read` and `edit_theme_options` can access global appearance tools without content or user management permissions; template controllers in newer WordPress versions additionally require permission to edit a REST-exposed post type. A taxonomy-only role can authorize content scopes to use its permitted term tools. Multisite and capability filters can further restrict what core WordPress REST controllers allow. `get_site_info` belongs to `content:read`; connections delegated only other families discover their available operations through `tools/list`.
 
-There are 31 tools across seven scope families. `content`, `appearance`, `media`, `settings` and `audit` have separate `:read` and `:write` scopes; `plugins` and `users` currently have only `:read`. A write scope includes its own family's read scope. Consent displays only permissions the account can grant, with individual checkboxes. WordPress roles do not automatically turn all REST endpoints into MCP tools.
+There are 35 tools across seven scope families. `content`, `appearance`, `media`, `settings` and `audit` have separate `:read` and `:write` scopes; `plugins` and `users` currently have only `:read`. A write scope includes its own family's read scope. Consent displays only permissions the account can grant, with individual checkboxes. WordPress roles do not automatically turn all REST endpoints into MCP tools.
 
 ## Content tools
 
@@ -68,6 +70,27 @@ Example tool call:
   }
 }
 ```
+
+## Reusable patterns
+
+A synced pattern is a block component saved once and embedded by reference (`<!-- wp:block {"ref":ID} /-->`). Editing it changes every page that embeds it. An unsynced pattern is a starting point that is copied on insert.
+
+| Tool | Scope | Purpose |
+| --- | --- | --- |
+| `list_patterns` | `content:read` | Published patterns plus drafts you may edit, filtered by search, sync status, category or status; optional `usage_count` |
+| `get_pattern` | `content:read` | Block markup, categories, version, `insert_markup` and where the pattern is used |
+| `create_pattern` | `content:write` | Create a synced (default) or unsynced pattern; published by default |
+| `update_pattern` | `content:write` | Change title, content, categories or status with the version from `get_pattern` |
+
+Permissions follow WordPress. Anyone who may edit posts can read published patterns, which is how Authors embed shared components; creating one requires publish permission, and changing one requires permission to edit that pattern. `editable` reports this per pattern. Categories are given by name, and missing ones are created only for users who may manage categories.
+
+`usage` lists the posts, pages, templates, template parts and other patterns that embed a pattern, including references nested inside groups or columns. Items the user cannot open are only counted in `hidden`, so an agent still sees how far an edit reaches without learning what those items are. `update_pattern` returns the same report after saving. A pattern cannot embed itself. Draft patterns render nothing where they are inserted, so `create_pattern` publishes unless told otherwise; a published pattern has no public URL of its own.
+
+Pattern updates are audited and support undo. Created patterns are recorded but never deleted automatically. Sync status is fixed at creation, as in the WordPress editor, and there is no pattern deletion tool.
+
+### Used in
+
+The same report is available in WordPress without an MCP client. The pattern list at `wp-admin/edit.php?post_type=wp_block` has a **Used in** column, and the editor shows a **Used in** panel in the document sidebar whenever a pattern is open, in both the post editor and the Site Editor. The panel reads `GET /wp-json/kodanote-mcp/v1/patterns/{id}/usage`, which uses the logged-in session with a REST nonce and the same visibility rules. Copies of unsynced patterns are independent, so they are not tracked.
 
 ## Appearance tools
 
@@ -186,7 +209,7 @@ Both scopes require `manage_options`. Undo additionally requires the original op
 
 Every mutation that reaches tool execution first saves a pending audit entry. If that entry cannot be saved, the mutation is blocked. Successful tool results include `audit: {id, status, reversible}`. The log records successful and failed attempts, and reports partial/uncertain outcomes when changes may have happened before a failure. Authentication, scope, capability or schema failures rejected before tool execution are not recorded. Ordinary reads are not logged.
 
-Supported undo covers settings, global styles, templates, targeted layouts, navigation, media metadata, content updates and moving content to trash. It restores the previous values through permission-checked WordPress operations, and records the undo itself with a link to the original entry. Trash operations also track comment IDs/statuses (up to 1,000 comments per item), so restoring a post cannot silently overwrite an intervening moderation change. New posts, menus, templates and terms are recorded but not automatically deleted by undo. Each entry reports whether undo is supported and, if not, why; failed, partial, expired, already reverted and undo entries are ineligible. Restoring prior values outside the current safe schema or a scheduled publication whose date has passed may require manual editing in WordPress.
+Supported undo covers settings, global styles, templates, targeted layouts, navigation, media metadata, content updates, pattern updates and moving content to trash. It restores the previous values through permission-checked WordPress operations, and records the undo itself with a link to the original entry. Trash operations also track comment IDs/statuses (up to 1,000 comments per item), so restoring a post cannot silently overwrite an intervening moderation change. New posts, patterns, menus, templates and terms are recorded but not automatically deleted by undo. Each entry reports whether undo is supported and, if not, why; failed, partial, expired, already reverted and undo entries are ineligible. Restoring prior values outside the current safe schema or a scheduled publication whose date has passed may require manual editing in WordPress.
 
 Before restoring, the plugin compares the current safe resource snapshot with the recorded after-state. Any difference blocks undo, including a later change from WordPress admin or another plugin. This is intentionally conservative: an unrelated change within that same snapshot also blocks undo. A per-entry database claim prevents two requests from reverting the same entry together. The original write and undo still use optimistic checks, not a database transaction spanning all WordPress hooks; they cannot lock out simultaneous external edits or undo emails, webhooks, publisher synchronization effects, or other plugin side effects.
 
@@ -194,7 +217,7 @@ History is retained for 90 days in this site's `kodanote_mcp_audit` table. Indiv
 
 ## Remaining boundaries
 
-- Content tools cover standard posts/pages and categories/tags, not arbitrary custom post types, WooCommerce, or third-party plugin APIs.
+- Content tools cover standard posts/pages, categories/tags and reusable patterns, not arbitrary custom post types, WooCommerce, or third-party plugin APIs.
 - No generic REST proxy, arbitrary options/meta access, PHP/shell execution, or filesystem/theme-source edits is exposed. Add a dedicated tool and capability/scope policy for further integrations.
 - User/plugin tools are inventories: no account/role changes, plugin installation/activation, theme switching, or WordPress updates.
 - Media tools manage existing metadata; there is no upload, URL sideload, binary replacement or file deletion tool.

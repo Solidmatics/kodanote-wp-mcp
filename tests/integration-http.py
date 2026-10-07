@@ -712,6 +712,7 @@ def expanded_permission_tests(client, contributor, author, registration, content
           "editor cannot invoke a crafted template mutation")
 
     site_editing_tests(client, admin_access, editor_access, content_access, selected_tokens["access_token"])
+    pattern_tests(client, editor, admin_access, editor_access, author_access, contributor_access, read_only_tokens["access_token"])
 
     settings = assert_tool(client, admin_access, "get_site_settings")
     check("title" in settings["settings"] and "admin_email" not in settings["settings"]
@@ -1225,6 +1226,119 @@ def audit_tests(client, admin, registration, access, editor_access, readonly_acc
     undo_change(client, access, changed)
     check(assert_tool(client, access, "get_layout", target)["content"] == layout["content"],
           "targeted layout undo restores the original template structure")
+
+
+def pattern_tests(client, editor, admin_access, editor_access, author_access, contributor_access, readonly_access):
+    paragraph = "<!-- wp:paragraph --><p>%s</p><!-- /wp:paragraph -->"
+    group = '<!-- wp:group --><div class="wp-block-group">%s</div><!-- /wp:group -->'
+    editor_tools = names_for(client, editor_access)
+    contributor_tools = names_for(client, contributor_access)
+    readonly_tools = names_for(client, readonly_access)
+    check({"list_patterns", "get_pattern", "create_pattern", "update_pattern"}.issubset(editor_tools),
+          "editor discovers reusable pattern tools")
+    check({"list_patterns", "get_pattern", "update_pattern"}.issubset(contributor_tools) and "create_pattern" not in contributor_tools,
+          "contributor discovers pattern reads but not creation, which requires publish permission")
+    check({"list_patterns", "get_pattern"}.issubset(readonly_tools)
+          and not readonly_tools.intersection({"create_pattern", "update_pattern"}),
+          "read-only content grant discovers only pattern reads")
+    check(not tool_ok(tool(client, contributor_access, "create_pattern", {"title": "Forbidden pattern", "content": paragraph % "No"})),
+          "contributor cannot invoke a crafted pattern creation")
+
+    cta = assert_tool(client, editor_access, "create_pattern", {
+        "title": "Call to action", "content": paragraph % "Shared call to action v1", "categories": ["Calls to action"]})
+    check(cta["sync_status"] == "synced" and cta["status"] == "publish" and cta["categories"] == ["Calls to action"]
+          and cta["insert_markup"] == '<!-- wp:block {"ref":%d} /-->' % cta["id"] and cta["editable"] is True
+          and cta["usage"] == {"total": 0, "items": [], "hidden": 0, "truncated": False}
+          and cta["audit"]["status"] == "success" and cta["audit"]["reversible"] is False,
+          "synced pattern creation publishes, creates its category, is audited and starts unused")
+    page = assert_tool(client, editor_access, "create_content", {
+        "post_type": "page", "title": "Pattern host page", "status": "publish", "content": group % cta["insert_markup"]})
+    draft = assert_tool(client, contributor_access, "create_content", {
+        "title": "Contributor pattern draft", "content": cta["insert_markup"]})
+    usage = assert_tool(client, editor_access, "get_pattern", {"id": cta["id"]})["usage"]
+    check(usage["total"] == 2 and usage["hidden"] == 0 and {item["id"] for item in usage["items"]} == {page["id"], draft["id"]},
+          "pattern usage finds nested and draft references the editor may open")
+    host = next(item for item in usage["items"] if item["id"] == page["id"])
+    check(host["type"] == "page" and host["type_label"] == "Page" and host.get("link") and host.get("edit_link"),
+          "usage items identify embedding content with view and edit links")
+
+    author_view = assert_tool(client, author_access, "get_pattern", {"id": cta["id"]})
+    check(author_view["editable"] is False and author_view["insert_markup"] == cta["insert_markup"]
+          and author_view["usage"]["total"] == 2 and author_view["usage"]["hidden"] == 1
+          and [item["id"] for item in author_view["usage"]["items"]] == [page["id"]]
+          and "Contributor pattern draft" not in json.dumps(author_view),
+          "author can read another user's published pattern to embed it, and only counts drafts they cannot open")
+    check(not tool_ok(tool(client, author_access, "update_pattern", {
+        "id": cta["id"], "version": author_view["version"], "title": "Hijacked"})),
+          "author cannot update another user's pattern")
+
+    check(not tool_ok(tool(client, editor_access, "update_pattern", {"id": cta["id"], "version": "0" * 64, "title": "Stale"})),
+          "pattern update rejects a stale version")
+    check(not tool_ok(tool(client, editor_access, "update_pattern", {
+        "id": cta["id"], "version": cta["version"], "content": group % cta["insert_markup"]})),
+          "pattern update rejects a pattern embedding itself")
+    updated = assert_tool(client, editor_access, "update_pattern", {
+        "id": cta["id"], "version": cta["version"], "content": paragraph % "Shared call to action v2"})
+    check("v2" in updated["content"] and updated["version"] != cta["version"]
+          and updated["usage"]["total"] == 2 and updated["audit"]["reversible"],
+          "pattern update saves, reports its reach and is reversible")
+    rendered_url = BASE + "/wp-json/wp/v2/pages/%d" % page["id"]
+    status, _, body = client.request(rendered_url)
+    check(status == 200 and "Shared call to action v2" in body["content"]["rendered"],
+          "the published page renders the edited synced pattern")
+    check(not tool_ok(tool(client, editor_access, "update_pattern", {
+        "id": cta["id"], "version": cta["version"], "title": "Old version"})),
+          "a version read before an update is stale afterwards")
+    undo_change(client, admin_access, updated)
+    restored = assert_tool(client, editor_access, "get_pattern", {"id": cta["id"]})
+    status, _, body = client.request(rendered_url)
+    check(restored["content"] == paragraph % "Shared call to action v1" and "Shared call to action v1" in body["content"]["rendered"],
+          "audit undo restores the pattern and every page embedding it")
+
+    starter = assert_tool(client, editor_access, "create_pattern", {
+        "title": "Starter layout", "sync_status": "unsynced",
+        "content": '<!-- wp:heading --><h2 class="wp-block-heading">Starter</h2><!-- /wp:heading -->'})
+    check(starter["sync_status"] == "unsynced" and starter["insert_markup"] == "",
+          "unsynced patterns are created as copy-on-insert starters")
+    synced = {item["id"] for item in assert_tool(client, editor_access, "list_patterns", {"sync_status": "synced", "per_page": 50})["items"]}
+    unsynced = {item["id"] for item in assert_tool(client, editor_access, "list_patterns", {"sync_status": "unsynced", "per_page": 50})["items"]}
+    check(cta["id"] in synced and starter["id"] not in synced and starter["id"] in unsynced and cta["id"] not in unsynced,
+          "pattern listing filters by sync status")
+    listed = assert_tool(client, editor_access, "list_patterns", {"category": "Calls to action", "include_usage": True})
+    check([item["id"] for item in listed["items"]] == [cta["id"]] and listed["items"][0]["usage_count"] == 2,
+          "pattern listing filters by category name and can include usage counts")
+    starter = assert_tool(client, editor_access, "update_pattern", {
+        "id": starter["id"], "version": starter["version"], "categories": ["Calls to action", "Starters"]})
+    check(starter["categories"] == ["Calls to action", "Starters"] and starter["sync_status"] == "unsynced",
+          "pattern categories are replaced by name, creating missing ones")
+    check(not tool_ok(tool(client, author_access, "create_pattern", {
+        "title": "Author categorized", "content": paragraph % "x", "categories": ["Author invented category"]})),
+          "author cannot create new pattern categories")
+    own = assert_tool(client, author_access, "create_pattern", {
+        "title": "Author pattern", "content": paragraph % "Author shared text", "categories": ["Starters"]})
+    check(own["editable"] is True and own["categories"] == ["Starters"], "author can create a pattern in an existing category")
+    author_list = {item["id"]: item for item in assert_tool(client, author_access, "list_patterns", {"per_page": 50})["items"]}
+    check(own["id"] in author_list and cta["id"] in author_list and author_list[cta["id"]]["editable"] is False,
+          "author listing includes shared published patterns, marked read-only")
+
+    status, _, html = editor.request(BASE + "/wp-admin/edit.php?post_type=wp_block")
+    check(status == 200 and "Used in" in html and "Pattern host page" in html and "Contributor pattern draft" in html
+          and "Not synced. Inserted copies are not tracked." in html,
+          "WordPress pattern list shows where each pattern is used")
+    status, _, nonce = editor.request(BASE + "/wp-admin/admin-ajax.php?action=rest-nonce")
+    nonce = str(nonce).strip()
+    check(status == 200 and re.fullmatch(r"[0-9a-f]{10}", nonce), "logged-in editor receives a REST nonce")
+    usage_url = API + "/patterns/%d/usage" % cta["id"]
+    status, _, body = editor.request(usage_url, headers={"X-WP-Nonce": nonce})
+    check(status == 200 and body.get("synced") is True and body.get("total") == 2
+          and page["id"] in {item["id"] for item in body.get("items", [])},
+          "editor panel route reports usage for a cookie-authenticated editor")
+    check(editor.request(usage_url)[0] in (401, 403) and client.request(usage_url)[0] in (401, 403),
+          "pattern usage route requires a logged-in user and a REST nonce")
+    status, _, html = editor.request(BASE + "/wp-admin/post.php?post=%d&action=edit" % cta["id"])
+    check(status == 200 and "kodanote-mcp/assets/pattern-usage.js" in html, "pattern editor loads the Used in panel")
+    status, _, html = editor.request(BASE + "/wp-admin/post.php?post=%d&action=edit" % page["id"])
+    check(status == 200 and "pattern-usage.js" not in html, "ordinary page editing does not load the pattern panel")
 
 
 def undo_change(client, access, changed):
