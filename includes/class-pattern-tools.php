@@ -12,7 +12,7 @@ final class Pattern_Tools {
 		$categories = array( 'type' => 'array', 'maxItems' => 20, 'uniqueItems' => true, 'items' => array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 100 ), 'description' => 'Pattern category names. Replaces existing categories; an empty array removes them. Missing categories are created when you may manage categories.' );
 		$status = array( 'type' => 'string', 'enum' => array( 'publish', 'draft' ), 'description' => 'Only published patterns render where they are inserted.' );
 		$title = array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 1000 );
-		$content = array( 'type' => 'string', 'maxLength' => 500000, 'description' => 'Complete WordPress block markup for the pattern.' );
+		$content = array( 'type' => 'string', 'maxLength' => 500000, 'description' => 'Complete WordPress block markup for the pattern, built from core blocks. Start from get_block_pattern or existing content rather than raw HTML.' );
 		return array(
 			self::definition( 'list_patterns', 'List reusable patterns', 'List reusable block patterns (synced and unsynced) the connected user may read, sorted by title: every published pattern, plus drafts you may edit. editable says whether you may change each one. A synced pattern is one shared component: pages embed it by reference, so editing it changes every page that uses it. Results exclude inaccessible items and may contain fewer than per_page items.', array(
 				'search' => array( 'type' => 'string', 'maxLength' => 200 ),
@@ -39,11 +39,20 @@ final class Pattern_Tools {
 				'categories' => $categories,
 				'status' => $status,
 			), array( 'id', 'version' ), false ),
+			self::definition( 'list_block_patterns', 'List ready-made section designs', 'List block patterns registered by the theme, plugins and WordPress, such as heroes, calls to action, features, pricing, testimonials and footers, sorted by title. Start a section from one of these with get_block_pattern instead of writing layout markup from scratch. They are designs to copy; for shared sections that stay in sync across pages, use list_patterns.', array(
+				'search' => array( 'type' => 'string', 'maxLength' => 200, 'description' => 'Case-insensitive match on name, title, description and keywords.' ),
+				'category' => array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 100, 'description' => 'A category slug from available_categories.' ),
+				'page' => array( 'type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 1 ),
+				'per_page' => array( 'type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50 ),
+			), array(), true ),
+			self::definition( 'get_block_pattern', 'Get a ready-made section design', 'Read the block markup of a registered pattern. Copy content into page content and adapt the text and images; the copy is independent of the pattern. block_types and post_types say where the design is meant to be used, for example core/template-part/footer.', array(
+				'name' => array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 200, 'description' => 'Exact pattern name from list_block_patterns, such as twentytwentyfive/banner-hero.' ),
+			), array( 'name' ), true ),
 		);
 	}
 
 	public static function required_scope( string $name ): ?string {
-		if ( in_array( $name, array( 'list_patterns', 'get_pattern' ), true ) ) {
+		if ( in_array( $name, array( 'list_patterns', 'get_pattern', 'list_block_patterns', 'get_block_pattern' ), true ) ) {
 			return 'content:read';
 		}
 		return in_array( $name, array( 'create_pattern', 'update_pattern' ), true ) ? 'content:write' : null;
@@ -54,6 +63,9 @@ final class Pattern_Tools {
 		$type = get_post_type_object( 'wp_block' );
 		if ( ! self::required_scope( $name ) || ! $type || ! get_current_user_id() || ! current_user_can( 'read' ) ) {
 			return false;
+		}
+		if ( in_array( $name, array( 'list_block_patterns', 'get_block_pattern' ), true ) ) {
+			return current_user_can( 'edit_posts' ) || current_user_can( 'edit_pages' );
 		}
 		return current_user_can( 'create_pattern' === $name ? $type->cap->create_posts : $type->cap->edit_posts );
 	}
@@ -79,6 +91,11 @@ final class Pattern_Tools {
 						return self::create_pattern( $input );
 					case 'update_pattern':
 						return self::update_pattern( $input );
+					case 'list_block_patterns':
+						return self::list_block_patterns( $input );
+					case 'get_block_pattern':
+						$pattern = \WP_Block_Patterns_Registry::get_instance()->get_registered( $input['name'] );
+						return $pattern ? self::format_block_pattern( $pattern, true ) : self::error( 'not_found', 'No registered block pattern has this name. Use list_block_patterns to find one.', 404 );
 				}
 			}
 		}
@@ -131,6 +148,53 @@ final class Pattern_Tools {
 			}
 		}
 		return array( 'items' => $items, 'page' => $page, 'has_more' => $page < (int) $query->max_num_pages );
+	}
+
+	/** Registered designs only: hidden (inserter: false) patterns are internal to themes and templates. */
+	private static function list_block_patterns( array $input ): array {
+		$search = strtolower( trim( $input['search'] ?? '' ) );
+		$category = $input['category'] ?? '';
+		$items = array();
+		foreach ( \WP_Block_Patterns_Registry::get_instance()->get_all_registered() as $pattern ) {
+			if ( ( isset( $pattern['inserter'] ) && false === $pattern['inserter'] ) || ( '' !== $category && ! in_array( $category, (array) ( $pattern['categories'] ?? array() ), true ) ) ) {
+				continue;
+			}
+			if ( '' !== $search ) {
+				$haystack = implode( ' ', array( $pattern['name'], $pattern['title'] ?? '', $pattern['description'] ?? '', implode( ' ', (array) ( $pattern['keywords'] ?? array() ) ) ) );
+				if ( false === strpos( strtolower( $haystack ), $search ) ) {
+					continue;
+				}
+			}
+			$items[] = self::format_block_pattern( $pattern, false );
+		}
+		usort( $items, static function ( $a, $b ) { return strcasecmp( $a['title'], $b['title'] ) ?: strcmp( $a['name'], $b['name'] ); } );
+		$categories = array();
+		foreach ( \WP_Block_Pattern_Categories_Registry::get_instance()->get_all_registered() as $registered ) {
+			$categories[ $registered['name'] ] = (string) ( $registered['label'] ?? $registered['name'] );
+		}
+		ksort( $categories );
+		$page = $input['page'] ?? 1;
+		$per_page = $input['per_page'] ?? 50;
+		return array(
+			'items' => array_slice( $items, ( $page - 1 ) * $per_page, $per_page ),
+			'page' => $page, 'total' => count( $items ), 'has_more' => $page * $per_page < count( $items ),
+			'available_categories' => (object) $categories,
+		);
+	}
+
+	private static function format_block_pattern( array $pattern, bool $full ): array {
+		$data = array(
+			'name' => (string) $pattern['name'],
+			'title' => (string) ( $pattern['title'] ?? '' ),
+			'description' => (string) ( $pattern['description'] ?? '' ),
+			'categories' => array_values( (array) ( $pattern['categories'] ?? array() ) ),
+			'block_types' => array_values( (array) ( $pattern['blockTypes'] ?? array() ) ),
+			'post_types' => array_values( (array) ( $pattern['postTypes'] ?? array() ) ),
+		);
+		if ( $full ) {
+			$data['content'] = (string) ( $pattern['content'] ?? '' );
+		}
+		return $data;
 	}
 
 	/** @return array|\WP_Error */

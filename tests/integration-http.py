@@ -445,6 +445,9 @@ def main():
     })
     check(status == 200 and body.get("result", {}).get("protocolVersion") == "2025-03-26",
           "authenticated MCP client initializes")
+    instructions = body["result"].get("instructions", "")
+    check(all(phrase in instructions for phrase in ("core/html", "list_block_patterns", "synced pattern", "get_global_styles", "alt text", "untrusted")),
+          "initialize instructions steer clients to blocks, patterns, theme presets and accessible content")
     response = client.request(RESOURCE, "POST", {"jsonrpc": "2.0", "method": "notifications/initialized"},
                               {"Authorization": "Bearer " + access,
                                "Accept": "application/json, text/event-stream"})
@@ -1243,6 +1246,21 @@ def pattern_tests(client, editor, admin_access, editor_access, author_access, co
           "read-only content grant discovers only pattern reads")
     check(not tool_ok(tool(client, contributor_access, "create_pattern", {"title": "Forbidden pattern", "content": paragraph % "No"})),
           "contributor cannot invoke a crafted pattern creation")
+    check({"list_block_patterns", "get_block_pattern"}.issubset(contributor_tools)
+          and {"list_block_patterns", "get_block_pattern"}.issubset(readonly_tools),
+          "anyone who writes content, and read-only grants, can browse ready-made designs")
+    everything = assert_tool(client, editor_access, "list_block_patterns", {"per_page": 100})
+    check(everything["total"] >= 1 and all("content" not in item for item in everything["items"])
+          and isinstance(everything["available_categories"], dict),
+          "block pattern listing returns registered designs and categories without their markup")
+    found = assert_tool(client, contributor_access, "list_block_patterns", {"search": "PRESERVED footer"})
+    check([item["name"] for item in found["items"]] == ["mcp-test/preserved-footer"]
+          and found["items"][0]["title"] == "Preserved footer fixture",
+          "block pattern search matches names and titles case-insensitively")
+    design = assert_tool(client, contributor_access, "get_block_pattern", {"name": "mcp-test/preserved-footer"})
+    check("Resolved footer pattern fixture" in design["content"], "block pattern read returns markup to copy and adapt")
+    check(not tool_ok(tool(client, contributor_access, "get_block_pattern", {"name": "mcp-test/missing"})),
+          "unknown block pattern names fail cleanly")
 
     cta = assert_tool(client, editor_access, "create_pattern", {
         "title": "Call to action", "content": paragraph % "Shared call to action v1", "categories": ["Calls to action"]})

@@ -3,7 +3,7 @@ Contributors: kodanote
 Tags: mcp, oauth, ai, content
 Requires at least: 6.5
 Requires PHP: 8.1
-Stable tag: 0.4.0
+Stable tag: 0.5.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -42,6 +42,9 @@ No. Use a client supporting Streamable HTTP and OAuth discovery/registration, or
 No. It exposes only the documented content, appearance and administration tools. Plugin/user management currently provides inventories; role changes, installation, arbitrary PHP, and permanent deletion are not exposed.
 
 == Changelog ==
+
+= 0.5.0 =
+Send practical site-building guidance in the MCP instructions: build with core blocks instead of raw HTML, start from ready-made patterns, use synced patterns for shared sections, keep design in theme presets and Global Styles, structure headings and images for accessibility and search, and read before writing. Add list_block_patterns and get_block_pattern to browse and copy designs registered by the theme, plugins and WordPress. 37 capability-gated tools.
 
 = 0.4.0 =
 Add reusable pattern tools: list, read, create and update synced and unsynced patterns through the existing content scopes. get_pattern and update_pattern report where a pattern is used, including nested references, templates and other patterns, and only count items the user cannot open. Pattern updates are audited with undo. Add a Used in column to the pattern list and a Used in panel to the post editor and Site Editor. 35 capability-gated tools.

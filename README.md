@@ -4,7 +4,7 @@ A standalone WordPress plugin that gives remote MCP clients role-aware content, 
 
 ## Install and connect
 
-1. Build with `python3 scripts/package.py`, then upload `dist/kodanote-mcp-0.4.0.zip` in **Plugins → Add New → Upload Plugin**. Alternatively copy this directory to `wp-content/plugins/kodanote-mcp` and activate it. On the existing Kodanote deployment, vendor it into the WordPress repository before deploying because production disallows file modifications.
+1. Build with `python3 scripts/package.py`, then upload `dist/kodanote-mcp-0.5.0.zip` in **Plugins → Add New → Upload Plugin**. Alternatively copy this directory to `wp-content/plugins/kodanote-mcp` and activate it. On the existing Kodanote deployment, vendor it into the WordPress repository before deploying because production disallows file modifications.
 2. Use HTTPS and pretty permalinks. Activate per site; network-wide activation is deliberately rejected.
 3. Open **Users → MCP Connections**, or **Profile → MCP Connections** for users who cannot manage users, and copy the displayed endpoint:
 
@@ -20,6 +20,8 @@ A standalone WordPress plugin that gives remote MCP clients role-aware content, 
 **Upgrading from 0.2.0:** header, footer, navigation and layout tools use the existing appearance scopes; broader site settings use the existing settings scopes. Audit history and undo require new `audit:read` / `audit:write` consent. Older client registrations retain their original scope ceiling, so remove/re-add the connector to register again if it cannot request the audit scopes. Existing tokens never gain new scopes automatically.
 
 **Upgrading from 0.3.x:** reusable pattern tools use the existing `content:read` / `content:write` scopes, so connections with content access discover them without reconnecting. The **Used in** column and editor panel need no setup.
+
+**Upgrading from 0.4.0:** `list_block_patterns` and `get_block_pattern` use the existing `content:read` scope. Clients read the new instructions and tool list when they connect, so start a new conversation or reconnect to pick them up.
 
 Revoke a connection from **MCP Connections** at any time. Access tokens last one hour. Refresh tokens rotate on every use, with an absolute 30-day authorization lifetime; reconnect after that. Changing the WordPress password also invalidates existing authorizations. Reusing a redeemed code or refresh token revokes its authorization family.
 
@@ -38,7 +40,7 @@ The accessible toolset is the intersection of **the OAuth scopes approved by the
 
 Subscribers have no MCP access with default capabilities. A custom design role with `read` and `edit_theme_options` can access global appearance tools without content or user management permissions; template controllers in newer WordPress versions additionally require permission to edit a REST-exposed post type. A taxonomy-only role can authorize content scopes to use its permitted term tools. Multisite and capability filters can further restrict what core WordPress REST controllers allow. `get_site_info` belongs to `content:read`; connections delegated only other families discover their available operations through `tools/list`.
 
-There are 35 tools across seven scope families. `content`, `appearance`, `media`, `settings` and `audit` have separate `:read` and `:write` scopes; `plugins` and `users` currently have only `:read`. A write scope includes its own family's read scope. Consent displays only permissions the account can grant, with individual checkboxes. WordPress roles do not automatically turn all REST endpoints into MCP tools.
+There are 37 tools across seven scope families. `content`, `appearance`, `media`, `settings` and `audit` have separate `:read` and `:write` scopes; `plugins` and `users` currently have only `:read`. A write scope includes its own family's read scope. Consent displays only permissions the account can grant, with individual checkboxes. WordPress roles do not automatically turn all REST endpoints into MCP tools.
 
 ## Content tools
 
@@ -81,6 +83,10 @@ A synced pattern is a block component saved once and embedded by reference (`<!-
 | `get_pattern` | `content:read` | Block markup, categories, version, `insert_markup` and where the pattern is used |
 | `create_pattern` | `content:write` | Create a synced (default) or unsynced pattern; published by default |
 | `update_pattern` | `content:write` | Change title, content, categories or status with the version from `get_pattern` |
+| `list_block_patterns` | `content:read` | Ready-made section designs registered by the theme, plugins and WordPress; search, filter by category |
+| `get_block_pattern` | `content:read` | A registered design's block markup, to copy into content and adapt |
+
+Registered block patterns (from the theme, plugins or WordPress) are designs to copy: the copy is independent and never changes with the pattern. Synced patterns are shared components that stay linked. Anyone who may edit posts or pages can browse registered designs; patterns hidden from the inserter are left out of listings.
 
 Permissions follow WordPress. Anyone who may edit posts can read published patterns, which is how Authors embed shared components; creating one requires publish permission, and changing one requires permission to edit that pattern. `editable` reports this per pattern. Categories are given by name, and missing ones are created only for users who may manage categories.
 
@@ -91,6 +97,18 @@ Pattern updates are audited and support undo. Created patterns are recorded but 
 ### Used in
 
 The same report is available in WordPress without an MCP client. The pattern list at `wp-admin/edit.php?post_type=wp_block` has a **Used in** column, and the editor shows a **Used in** panel in the document sidebar whenever a pattern is open, in both the post editor and the Site Editor. The panel reads `GET /wp-json/kodanote-mcp/v1/patterns/{id}/usage`, which uses the logged-in session with a REST nonce and the same visibility rules. Copies of unsynced patterns are independent, so they are not tracked.
+
+## Guidance for connected models
+
+On connection the server sends MCP `instructions`, which clients such as Claude add to the model's context in every conversation. They steer the model toward how WordPress sites are meant to be built:
+
+- build pages from core blocks and keep raw HTML out, copying block structure from patterns or existing content so the editor accepts it;
+- start sections from ready-made block patterns, and use synced patterns for sections shared across pages, checking usage before editing one;
+- keep design in the theme: palette, font size and spacing presets instead of hard-coded values, Global Styles for site-wide changes, template parts for headers and footers;
+- write for people and search engines: content headings from H2 down, media library images with alt text and no hotlinking, SEO fields when available;
+- check for existing content, read before writing, keep drafts by default, and change live content only on request.
+
+Tool descriptions repeat the parts that matter at the moment of writing. The text lives in `Server::instructions()`.
 
 ## Appearance tools
 

@@ -14,7 +14,7 @@ final class Tools {
 		$taxonomy = array( 'type' => 'string', 'enum' => array( 'category', 'post_tag' ), 'default' => 'category' );
 		$fields = array(
 			'title' => array( 'type' => 'string', 'maxLength' => 1000 ),
-			'content' => array( 'type' => 'string', 'maxLength' => 500000, 'description' => 'HTML or WordPress block markup. Supply the complete replacement content when updating.' ),
+			'content' => array( 'type' => 'string', 'maxLength' => 500000, 'description' => 'WordPress block markup built from core blocks and patterns; raw HTML is accepted but cannot be edited visually. Copy block structure from get_content, get_block_pattern or get_pattern so the editor accepts it. Supply the complete replacement content when updating.' ),
 			'excerpt' => array( 'type' => 'string', 'maxLength' => 10000 ),
 			'slug' => array( 'type' => 'string', 'maxLength' => 200 ),
 			'status' => array( 'type' => 'string', 'enum' => array( 'draft', 'pending', 'publish', 'future', 'private' ) ),
